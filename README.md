@@ -61,4 +61,4 @@
 
 ## 授權
 
-建議使用 [MIT License](https://choosealicense.com/licenses/mit/) 發佈（在 GitHub 建立 repository 時可以直接勾選自動產生 `LICENSE` 檔案）。
+使用 [MIT License](https://choosealicense.com/licenses/mit/) 
