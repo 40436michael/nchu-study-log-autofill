@@ -21,7 +21,8 @@
 1. 先在瀏覽器安裝 [Tampermonkey 擴充功能](https://www.tampermonkey.net/)（支援 Chrome、Edge、Firefox 等主流瀏覽器）。
 2. 點擊瀏覽器工具列的 Tampermonkey 圖示 → **管理面板（Dashboard）**。
 3. 點右上角「**+**」新增腳本，把本專案 [`nchu-study-log-autofill.user.js`](./nchu-study-log-autofill.user.js) 的內容整份貼上，取代預設內容。
-4. <img width="344" height="259" alt="image" src="https://github.com/user-attachments/assets/fd113618-bfaf-415a-b364-f7368687e183" />
+4. <img width="290" height="289" alt="image" src="https://github.com/user-attachments/assets/17fc50e7-ffe0-48bd-9736-2532d5161874" />
+
 
 5. 按 `Ctrl+S`（或選單裡的「儲存」）儲存腳本。
 6. 開啟 `https://psf.nchu.edu.tw/` 並登入，進入「學習日誌」頁面，畫面上方應該會自動出現一個黃色的操作面板。
