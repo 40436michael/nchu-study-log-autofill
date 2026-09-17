@@ -3,7 +3,8 @@
 一支 [Tampermonkey](https://www.tampermonkey.net/)（篡改猴）使用者腳本，用來自動化中興大學工讀出勤系統（`https://psf.nchu.edu.tw/`）「學習日誌」的填寫流程：指定日期範圍與需要天數，自動跳過六日挑出工作天，逐筆送出，全部完成後再自動帶你到「學習日誌列印」頁面並帶入查詢條件。
 
 > ⚠️ 這支腳本只是替你把「原本要手動重複打好幾次」的表單欄位自動填好、按下送出，本質上跟你自己一筆一筆手動填寫做的事情完全相同，沒有繞過系統的任何驗證或限制。使用前請詳閱下方「注意事項」。
-<img width="1133" height="468" alt="image" src="https://github.com/user-attachments/assets/fd02e4e5-0f20-4b9d-8ecd-f523dc5dd013" />
+<img width="1372" height="660" alt="image" src="https://github.com/user-attachments/assets/a457f5c7-68ac-47e3-80e2-69483032306a" />
+
 
 ## 功能特色
 
