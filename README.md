@@ -30,7 +30,9 @@
 
 1. 網址列輸入 `chrome://extensions`（Edge 則是 `edge://extensions`）。
 2. 打開右上角「**開發人員模式**」。
-3. 找到 Tampermonkey，展開詳細資料，確認「**允許使用者指令碼**」（Allow User Scripts）這個開關是打開的。
+3. <img width="272" height="290" alt="image" src="https://github.com/user-attachments/assets/13b37018-4e60-4f98-9eab-18cb5ad65fe4" />
+
+4. 找到 Tampermonkey，展開詳細資料，確認「**允許使用者指令碼**」（Allow User Scripts）這個開關是打開的。
 <img width="678" height="287" alt="image" src="https://github.com/user-attachments/assets/9a39e23a-2ded-4fd1-9e9f-defe4965dee1" />
 
 ## 使用方式
