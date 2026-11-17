@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中興大學出勤系統 - 學習日誌自動填寫
 // @namespace    https://psf.nchu.edu.tw/
-// @version      5.4
+// @version      5.5
 // @description  在「學習日誌」表單頁面，指定日期範圍與需要天數（可跨多個月、每月各挑幾天），自動跳過六日挑選工作天並逐筆送出；起訖日期可手打西元/民國（可只寫到月份，如 115年5月）或用日曆選擇；送出中途網頁被整頁重新整理也會自動接續；全部送完後自動切到「學習日誌列印」並帶入校內編號，跨月時每個月分開帶入日期範圍、按一次列印就換下一個月
 // @author       you
 // @match        https://psf.nchu.edu.tw/*
@@ -240,17 +240,6 @@
     await sleep(DEFAULTS.delayAfterSubmitMs);
   }
 
-  function getDoneSet(schno) {
-    try {
-      return new Set(JSON.parse(localStorage.getItem('nchu_study_log_autofill_done_' + schno) || '[]'));
-    } catch (e) {
-      return new Set();
-    }
-  }
-  function saveDoneSet(schno, set) {
-    localStorage.setItem('nchu_study_log_autofill_done_' + schno, JSON.stringify([...set]));
-  }
-
   // ---- 跨頁面重新整理也能接續的「批次佇列」 ----
   // 存進 localStorage，所以就算送出過程中網站把 iframe 整頁重新整理、
   // 我們目前的程式被腰斬，下一次腳本重新注入時還是讀得到還沒跑完的清單，
@@ -402,9 +391,6 @@
     patchDialogs();
     try {
       await submitOneDate(rocStr, job.work, job.schno);
-      const doneSet = getDoneSet(job.schno);
-      doneSet.add(rocStr);
-      saveDoneSet(job.schno, doneSet);
       log(panel, `${rocStr}：已送出 ✅`);
     } catch (err) {
       log(panel, `${rocStr}：送出失敗 ❌ (${err.message})，請確認後手動處理`);
@@ -498,7 +484,7 @@
       <div id="af-preview" style="margin-top:8px;"></div>
 
       <button id="af-start-btn" style="margin-top:8px;margin-right:6px;" disabled>開始自動填寫</button>
-      <button id="af-reset">清除本機已完成紀錄</button>
+      <button id="af-clear-list">清除日期清單</button>
 
       <div style="margin-top:8px;padding:6px;background:#fff;border:1px solid #ddd;border-radius:4px;display:flex;justify-content:space-between;align-items:center;gap:8px;">
         <span id="af-job-status" style="font-size:12px;color:#555;">目前沒有進行中的批次。</span>
@@ -526,7 +512,7 @@
       generateBtn: box.querySelector('#af-generate'),
       preview: box.querySelector('#af-preview'),
       startBtn: box.querySelector('#af-start-btn'),
-      resetBtn: box.querySelector('#af-reset'),
+      clearListBtn: box.querySelector('#af-clear-list'),
       jobStatus: box.querySelector('#af-job-status'),
       cancelBtn: box.querySelector('#af-cancel'),
       logEl: box.querySelector('#af-log'),
@@ -737,10 +723,13 @@
       panel.startBtn.disabled = currentPicks.length === 0;
     });
 
-    panel.resetBtn.addEventListener('click', () => {
-      const schno = panel.schnoInput.value.trim();
-      localStorage.removeItem('nchu_study_log_autofill_done_' + schno);
-      log(panel, `已清除校內編號 ${schno} 的本機「已完成」紀錄。`);
+    // 清掉目前產生的日期清單（不影響進行中的批次，那個要用「取消目前批次」）
+    panel.clearListBtn.addEventListener('click', () => {
+      currentPicks = [];
+      genCtx = null;
+      renderPreview();
+      if (!readJob()) panel.startBtn.disabled = true;
+      log(panel, '已清除日期清單。');
     });
 
     panel.cancelBtn.addEventListener('click', () => {
