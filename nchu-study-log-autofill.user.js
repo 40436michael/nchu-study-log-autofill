@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中興大學出勤系統 - 學習日誌自動填寫
 // @namespace    https://psf.nchu.edu.tw/
-// @version      5.3
+// @version      5.4
 // @description  在「學習日誌」表單頁面，指定日期範圍與需要天數（可跨多個月、每月各挑幾天），自動跳過六日挑選工作天並逐筆送出；起訖日期可手打西元/民國（可只寫到月份，如 115年5月）或用日曆選擇；送出中途網頁被整頁重新整理也會自動接續；全部送完後自動切到「學習日誌列印」並帶入校內編號，跨月時每個月分開帶入日期範圍、按一次列印就換下一個月
 // @author       you
 // @match        https://psf.nchu.edu.tw/*
@@ -536,7 +536,7 @@
   function init() {
     const schnoOptions = getSchnoOptionsFromPage();
     const panel = buildPanel(schnoOptions);
-    let currentPicks = []; // [{date: Date, checked: bool}]
+    let currentPicks = []; // [{date: Date, checked: bool, auto?: bool（取消勾選時自動補上的）}]
 
     // 起始/結束日期：文字輸入框可以直接手打（格式 yyyy-mm-dd），
     // 旁邊的 📅 按鈕則是打開隱藏的原生日期輸入框，用日曆選好後同步回文字框。
@@ -594,11 +594,11 @@
         panel.preview.innerHTML = '<i style="color:#999;">尚未產生清單</i>';
         return;
       }
-      // 依月份分組顯示，每組前面加一行月份標題
-      const countByMonth = {};
+      // 依月份分組顯示，每組前面加一行月份標題（顯示目前勾選幾天）
+      const checkedByMonth = {};
       currentPicks.forEach((p) => {
         const k = monthKey(p.date);
-        countByMonth[k] = (countByMonth[k] || 0) + 1;
+        checkedByMonth[k] = (checkedByMonth[k] || 0) + (p.checked ? 1 : 0);
       });
       let lastKey = null;
       panel.preview.innerHTML = currentPicks
@@ -607,20 +607,86 @@
           let header = '';
           if (k !== lastKey) {
             lastKey = k;
-            header = `<div style="font-weight:bold;margin-top:6px;">${k}（${countByMonth[k]} 天）</div>`;
+            header = `<div style="font-weight:bold;margin-top:6px;">${k}（已勾選 ${checkedByMonth[k]} 天）</div>`;
           }
           return `${header}
-          <label style="display:block;">
+          <label style="display:block;${p.checked ? '' : 'color:#999;text-decoration:line-through;'}">
             <input type="checkbox" class="af-pick" data-i="${i}" ${p.checked ? 'checked' : ''}>
-            ${toIsoString(p.date)}（民國 ${toRocString(p.date)}）
+            ${toIsoString(p.date)}（民國 ${toRocString(p.date)}）${
+              p.auto ? '<span style="color:#2a7;font-size:11px;">（自動補上）</span>' : ''
+            }
           </label>`;
         })
         .join('');
       panel.preview.querySelectorAll('.af-pick').forEach((cb) => {
         cb.addEventListener('change', (e) => {
-          currentPicks[Number(e.target.dataset.i)].checked = e.target.checked;
+          const p = currentPicks[Number(e.target.dataset.i)];
+          p.checked = e.target.checked;
+          onPickToggled(p);
         });
       });
+    }
+
+    // ---- 取消勾選時自動補一天 ----
+    // genCtx 記住「產生日期清單」當下的條件，補日期時用同一套規則（範圍、跳六日、排除日期）。
+    let genCtx = null; // { start, end, needed, perMonth, excludeSet }
+
+    // 這一天所屬的「配額範圍」：每個月模式 = 同一個月（夾在起訖日期內）；整段合計模式 = 整個範圍
+    function quotaScope(date) {
+      if (!genCtx.perMonth) return [genCtx.start, genCtx.end];
+      const ms = new Date(date.getFullYear(), date.getMonth(), 1);
+      const me = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+      return [ms < genCtx.start ? genCtx.start : ms, me > genCtx.end ? genCtx.end : me];
+    }
+    function sameScope(a, b) {
+      return !genCtx.perMonth || monthKey(a) === monthKey(b);
+    }
+
+    // 在同一個配額範圍內，找最早一個「還沒出現在清單上」的工作天（取消勾選過的也算出現過，不會再被挑回來）
+    function findReplacement(date) {
+      const [from, to] = quotaScope(date);
+      const used = new Set(currentPicks.map((p) => toIsoString(p.date)));
+      const cur = new Date(from.getTime());
+      while (cur <= to) {
+        const day = cur.getDay();
+        const iso = toIsoString(cur);
+        if (day !== 0 && day !== 6 && !genCtx.excludeSet.has(iso) && !used.has(iso)) {
+          return new Date(cur.getTime());
+        }
+        cur.setDate(cur.getDate() + 1);
+      }
+      return null;
+    }
+
+    function onPickToggled(p) {
+      if (genCtx) {
+        const group = currentPicks.filter((q) => sameScope(q.date, p.date));
+        const checkedCount = group.filter((q) => q.checked).length;
+        const scopeName = genCtx.perMonth ? monthKey(p.date) : '整段範圍';
+
+        if (!p.checked && checkedCount < genCtx.needed) {
+          // 取消勾選後不夠天數 → 同一個月（或整段範圍）裡再補一天
+          const r = findReplacement(p.date);
+          if (r) {
+            currentPicks.push({ date: r, checked: true, auto: true });
+            currentPicks.sort((a, b) => a.date - b.date);
+            log(panel, `已取消 ${toIsoString(p.date)}，自動在 ${scopeName} 補上 ${toIsoString(r)}。`);
+          } else {
+            log(panel, `⚠️ 已取消 ${toIsoString(p.date)}，但 ${scopeName} 範圍內已經沒有其他工作天可以補了。`);
+          }
+        } else if (p.checked && checkedCount > genCtx.needed) {
+          // 重新勾回來後超過天數 → 把剛才自動補上的那天拿掉，回到原本的天數
+          const extra = group
+            .filter((q) => q !== p && q.auto && q.checked)
+            .pop();
+          if (extra) {
+            currentPicks = currentPicks.filter((q) => q !== extra);
+            log(panel, `已重新勾選 ${toIsoString(p.date)}，移除先前自動補上的 ${toIsoString(extra.date)}。`);
+          }
+        }
+      }
+      renderPreview();
+      if (!readJob()) panel.startBtn.disabled = !currentPicks.some((q) => q.checked);
     }
 
     panel.generateBtn.addEventListener('click', () => {
@@ -665,6 +731,7 @@
         }
       }
       currentPicks = picks.map((d) => ({ date: d, checked: true }));
+      genCtx = { start, end, needed, perMonth, excludeSet };
 
       renderPreview();
       panel.startBtn.disabled = currentPicks.length === 0;
