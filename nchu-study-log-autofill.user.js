@@ -19,7 +19,7 @@
   const DEFAULTS = {
     startDate: '2026-08-01',   // 起始日期（西元, yyyy-mm-dd）
     endDate: '2026-08-20',     // 結束日期（西元, yyyy-mm-dd）
-    neededDays: 7,             // 需要幾個工作天
+    neededDays: 4,             // 需要幾個工作天
     needMode: 'month',         // 'month' = 每個月各需要 neededDays 天；'total' = 整段範圍合計 neededDays 天
     excludeDates: '',          // 額外要排除的日期（西元 yyyy-mm-dd，逗號分隔），例如國定假日、補假
     work: '協助資料整理、資料標記',
