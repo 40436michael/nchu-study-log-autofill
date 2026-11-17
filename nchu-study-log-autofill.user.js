@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         中興大學出勤系統 - 學習日誌自動填寫
 // @namespace    https://psf.nchu.edu.tw/
-// @version      5.1
-// @description  在「學習日誌」表單頁面，指定日期範圍與需要天數，自動跳過六日挑選工作天並逐筆送出；起訖日期可直接手打或用日曆選擇；送出中途網頁被整頁重新整理也會自動接續；全部送完後自動切到「學習日誌列印」並帶入校內編號與日期範圍
+// @version      5.3
+// @description  在「學習日誌」表單頁面，指定日期範圍與需要天數（可跨多個月、每月各挑幾天），自動跳過六日挑選工作天並逐筆送出；起訖日期可手打西元/民國（可只寫到月份，如 115年5月）或用日曆選擇；送出中途網頁被整頁重新整理也會自動接續；全部送完後自動切到「學習日誌列印」並帶入校內編號，跨月時每個月分開帶入日期範圍、按一次列印就換下一個月
 // @author       you
 // @match        https://psf.nchu.edu.tw/*
 // @run-at       document-idle
@@ -20,6 +20,7 @@
     startDate: '2026-08-01',   // 起始日期（西元, yyyy-mm-dd）
     endDate: '2026-08-20',     // 結束日期（西元, yyyy-mm-dd）
     neededDays: 7,             // 需要幾個工作天
+    needMode: 'month',         // 'month' = 每個月各需要 neededDays 天；'total' = 整段範圍合計 neededDays 天
     excludeDates: '',          // 額外要排除的日期（西元 yyyy-mm-dd，逗號分隔），例如國定假日、補假
     work: '協助資料整理、資料標記',
     schno: '115RB004',
@@ -96,25 +97,71 @@
     return date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-' + pad2(date.getDate());
   }
 
-  function parseIsoDate(str) {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(str).trim());
-    if (!m) return null;
-    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-    if (isNaN(d.getTime())) return null;
-    return d;
+  // 寬鬆的日期解析，西元、民國都吃：
+  //   2026-05-01、2026/5/1、20260501、115-05-01、115/5/1、1150501、115年5月1日
+  // 只寫到「月」也可以（例如 115年5月、2026-05、115/5）：
+  //   mode = 'start' → 該月 1 號；mode = 'end' → 該月最後一天；mode = 'exact' → 不接受只寫到月
+  // 年份 4 位數視為西元，2~3 位數視為民國。
+  function parseFlexibleDate(str, mode) {
+    const s = String(str || '').trim().replace(/\s+/g, '');
+    if (!s) return null;
+    let mt;
+    let y, m, d;
+    if ((mt = /^(\d{2,4})年(\d{1,2})月(?:(\d{1,2})日?)?$/.exec(s))) {
+      [y, m, d] = [mt[1], mt[2], mt[3]];
+    } else if ((mt = /^(\d{2,4})[-/.](\d{1,2})(?:[-/.](\d{1,2}))?$/.exec(s))) {
+      [y, m, d] = [mt[1], mt[2], mt[3]];
+    } else if ((mt = /^(\d{3,4})(\d{2})(\d{2})$/.exec(s))) {
+      [y, m, d] = [mt[1], mt[2], mt[3]];
+    } else {
+      return null;
+    }
+    y = Number(y);
+    m = Number(m);
+    if (y < 1000) y += 1911;
+    if (m < 1 || m > 12) return null;
+    if (d === undefined) {
+      if (mode === 'exact') return null;
+      d = mode === 'end' ? new Date(y, m, 0).getDate() : 1;
+    } else {
+      d = Number(d);
+    }
+    const date = new Date(y, m - 1, d);
+    // 擋掉 2026-02-31 這種會被 Date 自動進位成 3 月的日期
+    if (date.getFullYear() !== y || date.getMonth() !== m - 1 || date.getDate() !== d) return null;
+    return date;
   }
 
   function parseExcludeSet(text) {
     const set = new Set();
     String(text)
-      .split(/[,，\s]+/)
+      .split(/[,，、;；\s]+/)
       .map((s) => s.trim())
       .filter(Boolean)
       .forEach((s) => {
-        const d = parseIsoDate(s);
+        const d = parseFlexibleDate(s, 'exact');
         if (d) set.add(toIsoString(d));
       });
     return set;
+  }
+
+  function monthKey(date) {
+    return date.getFullYear() + '-' + pad2(date.getMonth() + 1);
+  }
+
+  // 每個月各自挑 perMonth 個工作天（範圍頭尾若只涵蓋半個月，就只在涵蓋到的那幾天裡挑）。
+  // 回傳 [{ key: 'yyyy-mm', picks: [Date...] }, ...]
+  function pickWorkdaysPerMonth(start, end, perMonth, excludeSet) {
+    const groups = [];
+    let cur = new Date(start.getFullYear(), start.getMonth(), 1);
+    while (cur <= end) {
+      const monthEnd = new Date(cur.getFullYear(), cur.getMonth() + 1, 0);
+      const from = cur < start ? start : cur;
+      const to = monthEnd > end ? end : monthEnd;
+      groups.push({ key: monthKey(cur), picks: pickWorkdays(from, to, perMonth, excludeSet) });
+      cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+    }
+    return groups;
   }
 
   // 在 [start, end] 範圍內，跳過六日與 excludeSet 中的日期，
@@ -235,13 +282,47 @@
   }
 
   // ---- 送完一批日期後，自動幫忙切到「學習日誌列印」並帶好查詢條件 ----
+  // 列印請求放太久（例如上次沒印完就關掉）就當作過期，免得之後手動點進列印頁還被帶入舊資料
+  const PRINT_JOB_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+  // 把送出過的民國日期（yyymmdd）依月份分組，每個月一筆列印範圍：該月 1 號 ~ 月底
+  function buildPrintMonths(rocDates) {
+    const keys = [...new Set(rocDates.map((s) => String(s).slice(0, -2)))].sort();
+    return keys.map((key) => {
+      const rocYear = Number(key.slice(0, -2));
+      const month = Number(key.slice(-2));
+      const lastDay = new Date(rocYear + 1911, month, 0).getDate();
+      return {
+        label: `${rocYear}年${month}月`,
+        start: key + '01',
+        end: key + pad2(lastDay),
+        printed: false,
+      };
+    });
+  }
+
   function savePrintJob(job) {
     localStorage.setItem(PRINT_JOB_KEY, JSON.stringify(job));
   }
   function readPrintJob() {
     try {
       const raw = localStorage.getItem(PRINT_JOB_KEY);
-      return raw ? JSON.parse(raw) : null;
+      if (!raw) return null;
+      const job = JSON.parse(raw);
+      if (!job) return null;
+      // 舊版（5.1 以前）存的是單一 start/end，轉成只有一個月的格式
+      if (!Array.isArray(job.months)) {
+        if (!job.start || !job.end) return null;
+        job.months = [{ label: `${job.start} ~ ${job.end}`, start: job.start, end: job.end, printed: false }];
+        job.index = 0;
+      }
+      if (job.months.length === 0) return null;
+      if (job.createdAt && Date.now() - job.createdAt > PRINT_JOB_MAX_AGE_MS) {
+        localStorage.removeItem(PRINT_JOB_KEY);
+        return null;
+      }
+      if (!(job.index >= 0 && job.index < job.months.length)) job.index = 0;
+      return job;
     } catch (e) {
       return null;
     }
@@ -295,10 +376,15 @@
 
       // 全部送完後，自動幫忙切換到「學習日誌列印」並帶好校內編號、起訖日期，
       // 少一道自己回想日期範圍、重新選校內編號的手續；最後那一下「列印」還是要你自己按。
-      const dates = (job.allDates && job.allDates.length ? job.allDates : []).slice().sort();
-      if (dates.length > 0) {
-        savePrintJob({ schno: job.schno, start: dates[0], end: dates[dates.length - 1] });
-        log(panel, `準備自動切換到「學習日誌列印」，並帶入校內編號 ${job.schno}、日期 ${dates[0]} ~ ${dates[dates.length - 1]}...`);
+      const months = buildPrintMonths(job.allDates || []);
+      if (months.length > 0) {
+        savePrintJob({ schno: job.schno, months, index: 0, createdAt: Date.now() });
+        log(
+          panel,
+          `準備自動切換到「學習日誌列印」，校內編號 ${job.schno}，共 ${months.length} 個月要分開列印：${months
+            .map((m) => m.label)
+            .join('、')}...`
+        );
         const ok = goToPrintMenu();
         if (!ok) {
           log(panel, '⚠️ 沒能自動找到「學習日誌列印」選單連結，麻煩自己點一下左側選單，欄位會自動幫你帶好。');
@@ -361,20 +447,30 @@
       <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 8px;align-items:center;margin-bottom:8px;">
         <label>起始日期</label>
         <div style="display:flex;gap:4px;align-items:center;position:relative;">
-          <input type="text" id="af-start" placeholder="yyyy-mm-dd" value="${DEFAULTS.startDate}" style="flex:1;">
+          <input type="text" id="af-start" placeholder="例如 2026-05-01 或 115年5月" value="${DEFAULTS.startDate}" style="flex:1;">
           <button type="button" id="af-start-cal" title="用日曆選擇">📅</button>
           <input type="date" id="af-start-native" value="${DEFAULTS.startDate}" style="position:absolute;width:0;height:0;opacity:0;pointer-events:none;">
         </div>
 
         <label>結束日期</label>
         <div style="display:flex;gap:4px;align-items:center;position:relative;">
-          <input type="text" id="af-end" placeholder="yyyy-mm-dd" value="${DEFAULTS.endDate}" style="flex:1;">
+          <input type="text" id="af-end" placeholder="例如 2026-09-30 或 115年9月" value="${DEFAULTS.endDate}" style="flex:1;">
           <button type="button" id="af-end-cal" title="用日曆選擇">📅</button>
           <input type="date" id="af-end-native" value="${DEFAULTS.endDate}" style="position:absolute;width:0;height:0;opacity:0;pointer-events:none;">
         </div>
 
+        <span></span>
+        <div id="af-range-hint" style="font-size:11px;color:#777;"></div>
+
         <label>需要天數</label>
-        <input type="number" id="af-needed" min="1" max="31" value="${DEFAULTS.neededDays}" style="width:60px;">
+        <div style="display:flex;gap:4px;align-items:center;">
+          <select id="af-need-mode">
+            <option value="month" ${DEFAULTS.needMode === 'month' ? 'selected' : ''}>每個月</option>
+            <option value="total" ${DEFAULTS.needMode === 'total' ? 'selected' : ''}>整段合計</option>
+          </select>
+          <input type="number" id="af-needed" min="1" value="${DEFAULTS.neededDays}" style="width:60px;">
+          <span>天</span>
+        </div>
 
         <label>排除日期</label>
         <input type="text" id="af-exclude" placeholder="例如 2026-08-05, 2026-08-06" value="${DEFAULTS.excludeDates}" style="width:100%;">
@@ -393,6 +489,8 @@
         </select>
       </div>
       <div style="font-size:11px;color:#777;margin-bottom:8px;">
+        日期可用西元或民國（2026-05-01、115/5/1、1150501、115年5月1日），只寫到月份也行（起始取 1 號、結束取月底），
+        例如 115年5月 ~ 115年9月 就是 2026-05-01 ~ 2026-09-30。選「每個月」時會在每個月各挑指定天數。<br>
         會自動跳過範圍內的六日；其他國定假日/補假請自行填在「排除日期」欄位（可用逗號分隔多個日期）。
       </div>
 
@@ -419,6 +517,8 @@
       endNative: box.querySelector('#af-end-native'),
       startCalBtn: box.querySelector('#af-start-cal'),
       endCalBtn: box.querySelector('#af-end-cal'),
+      rangeHint: box.querySelector('#af-range-hint'),
+      needModeInput: box.querySelector('#af-need-mode'),
       neededInput: box.querySelector('#af-needed'),
       excludeInput: box.querySelector('#af-exclude'),
       workInput: box.querySelector('#af-work'),
@@ -440,11 +540,11 @@
 
     // 起始/結束日期：文字輸入框可以直接手打（格式 yyyy-mm-dd），
     // 旁邊的 📅 按鈕則是打開隱藏的原生日期輸入框，用日曆選好後同步回文字框。
-    function wireDateDual(textInput, nativeInput, calBtn) {
+    function wireDateDual(textInput, nativeInput, calBtn, mode) {
       if (!textInput || !nativeInput || !calBtn) return;
       calBtn.addEventListener('click', () => {
         // 先把目前文字框裡看得懂的日期同步給原生輸入框，這樣打開日曆時預設會停在同一天
-        const parsed = parseIsoDate(textInput.value);
+        const parsed = parseFlexibleDate(textInput.value, mode);
         if (parsed) {
           nativeInput.value = toIsoString(parsed);
         }
@@ -458,25 +558,63 @@
       nativeInput.addEventListener('change', () => {
         if (nativeInput.value) {
           textInput.value = nativeInput.value;
+          updateRangeHint();
         }
       });
+      textInput.addEventListener('input', updateRangeHint);
     }
-    wireDateDual(panel.startInput, panel.startNative, panel.startCalBtn);
-    wireDateDual(panel.endInput, panel.endNative, panel.endCalBtn);
+
+    // 在起訖日期下方即時顯示「實際會用的範圍」，手打民國或只寫月份時可以一眼確認有沒有被正確理解
+    function updateRangeHint() {
+      const startRaw = panel.startInput.value.trim();
+      const endRaw = panel.endInput.value.trim();
+      const start = parseFlexibleDate(startRaw, 'start');
+      const end = parseFlexibleDate(endRaw, 'end');
+      const parts = [];
+      if (startRaw && !start) parts.push('⚠️ 看不懂起始日期');
+      if (endRaw && !end) parts.push('⚠️ 看不懂結束日期');
+      if (start && end) {
+        if (start > end) {
+          parts.push('⚠️ 起始日期晚於結束日期');
+        } else {
+          const months =
+            (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth()) + 1;
+          parts.push(`實際範圍：${toIsoString(start)} ~ ${toIsoString(end)}（涵蓋 ${months} 個月）`);
+        }
+      }
+      panel.rangeHint.textContent = parts.join('　');
+    }
+
+    wireDateDual(panel.startInput, panel.startNative, panel.startCalBtn, 'start');
+    wireDateDual(panel.endInput, panel.endNative, panel.endCalBtn, 'end');
+    updateRangeHint();
 
     function renderPreview() {
       if (currentPicks.length === 0) {
         panel.preview.innerHTML = '<i style="color:#999;">尚未產生清單</i>';
         return;
       }
+      // 依月份分組顯示，每組前面加一行月份標題
+      const countByMonth = {};
+      currentPicks.forEach((p) => {
+        const k = monthKey(p.date);
+        countByMonth[k] = (countByMonth[k] || 0) + 1;
+      });
+      let lastKey = null;
       panel.preview.innerHTML = currentPicks
-        .map(
-          (p, i) => `
+        .map((p, i) => {
+          const k = monthKey(p.date);
+          let header = '';
+          if (k !== lastKey) {
+            lastKey = k;
+            header = `<div style="font-weight:bold;margin-top:6px;">${k}（${countByMonth[k]} 天）</div>`;
+          }
+          return `${header}
           <label style="display:block;">
             <input type="checkbox" class="af-pick" data-i="${i}" ${p.checked ? 'checked' : ''}>
             ${toIsoString(p.date)}（民國 ${toRocString(p.date)}）
-          </label>`
-        )
+          </label>`;
+        })
         .join('');
       panel.preview.querySelectorAll('.af-pick').forEach((cb) => {
         cb.addEventListener('change', (e) => {
@@ -486,27 +624,47 @@
     }
 
     panel.generateBtn.addEventListener('click', () => {
-      const start = parseIsoDate(panel.startInput.value);
-      const end = parseIsoDate(panel.endInput.value);
+      const start = parseFlexibleDate(panel.startInput.value, 'start');
+      const end = parseFlexibleDate(panel.endInput.value, 'end');
       const needed = Math.max(1, parseInt(panel.neededInput.value, 10) || 1);
+      const perMonth = panel.needModeInput.value === 'month';
       const excludeSet = parseExcludeSet(panel.excludeInput.value);
 
       if (!start || !end || start > end) {
-        originalAlert('請確認起始日期與結束日期都有填，且起始日期不晚於結束日期。');
+        originalAlert(
+          '請確認起始日期與結束日期都有填、格式看得懂（例如 2026-05-01、115/5/1、115年5月），且起始日期不晚於結束日期。'
+        );
         return;
       }
 
-      const picks = pickWorkdays(start, end, needed, excludeSet);
-      currentPicks = picks.map((d) => ({ date: d, checked: true }));
-
-      if (picks.length < needed) {
-        log(
-          panel,
-          `⚠️ 範圍內扣除六日與排除日期後，只找到 ${picks.length} 個工作天（需要 ${needed} 個），請放寬日期範圍或減少需要天數。`
-        );
+      let picks;
+      if (perMonth) {
+        const groups = pickWorkdaysPerMonth(start, end, needed, excludeSet);
+        picks = [];
+        const short = [];
+        groups.forEach((g) => {
+          picks.push(...g.picks);
+          if (g.picks.length < needed) short.push(`${g.key} 只有 ${g.picks.length} 天`);
+        });
+        if (short.length > 0) {
+          log(
+            panel,
+            `⚠️ 以下月份扣除六日與排除日期後湊不滿 ${needed} 個工作天：${short.join('、')}（範圍頭尾只涵蓋半個月時常見，請確認是否正確）。`
+          );
+        }
+        log(panel, `已產生 ${groups.length} 個月、共 ${picks.length} 個日期，可在下方取消勾選調整。`);
       } else {
-        log(panel, `已產生 ${picks.length} 個日期，可在下方取消勾選調整。`);
+        picks = pickWorkdays(start, end, needed, excludeSet);
+        if (picks.length < needed) {
+          log(
+            panel,
+            `⚠️ 範圍內扣除六日與排除日期後，只找到 ${picks.length} 個工作天（需要 ${needed} 個），請放寬日期範圍或減少需要天數。`
+          );
+        } else {
+          log(panel, `已產生 ${picks.length} 個日期，可在下方取消勾選調整。`);
+        }
       }
+      currentPicks = picks.map((d) => ({ date: d, checked: true }));
 
       renderPreview();
       panel.startBtn.disabled = currentPicks.length === 0;
@@ -539,8 +697,9 @@
         return;
       }
 
+      const monthCount = new Set(selected.map(monthKey)).size;
       const ok = originalConfirm(
-        `確定要自動送出 ${selected.length} 筆學習日誌嗎？\n校內編號：${schno}\n工作內容：${work}\n\n送出過程中若網站把頁面重新整理，腳本會自動接續處理剩下的日期，不用手動再按一次。`
+        `確定要自動送出 ${selected.length} 筆學習日誌嗎？（涵蓋 ${monthCount} 個月）\n校內編號：${schno}\n工作內容：${work}\n\n送出過程中若網站把頁面重新整理，腳本會自動接續處理剩下的日期，不用手動再按一次。`
       );
       if (!ok) return;
 
@@ -572,8 +731,12 @@
 
   // 「學習日誌列印」查詢頁：如果剛好有上一步留下來的列印請求，自動幫忙帶入校內編號、起訖日期，
   // 最後「列印」那一下（會開新分頁跳出瀏覽器原生列印視窗）還是要你自己按，這是瀏覽器的安全限制，腳本做不到。
+  //
+  // 跨好幾個月時「每個月分開列印」：一次只帶入一個月，你按下「列印」後，
+  // 腳本會自動把欄位換成下一個還沒印的月份；也可以在面板上直接點任一個月份重新帶入。
+  // 進度存在 localStorage，就算按列印後頁面被重新整理也會接續停在下一個月。
   function initPrint() {
-    const printJob = readPrintJob();
+    let printJob = readPrintJob();
     if (!printJob) return; // 使用者自己手動點進來看看而已，不動這個頁面
 
     const schnoSelect = document.getElementById('schno');
@@ -581,34 +744,95 @@
     const endInput = document.getElementById('dtQryEnd');
     const btn = document.getElementById('btnSent');
 
-    if (schnoSelect) {
-      schnoSelect.value = printJob.schno;
-      schnoSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    const note = document.createElement('div');
+    note.style.cssText =
+      'background:#fffbe6;border:2px solid #c1aa65;border-radius:8px;padding:10px;margin-bottom:10px;font-size:13px;font-family:sans-serif;';
+    if (document.body) {
+      document.body.insertBefore(note, document.body.firstChild);
     }
-    if (begInput) setNativeValue(begInput, printJob.start);
-    if (endInput) setNativeValue(endInput, printJob.end);
 
-    clearPrintJob();
+    function fillMonth(i) {
+      const m = printJob.months[i];
+      if (!m) return;
+      printJob.index = i;
+      savePrintJob(printJob);
+      if (schnoSelect) {
+        schnoSelect.value = printJob.schno;
+        schnoSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (begInput) setNativeValue(begInput, m.start);
+      if (endInput) setNativeValue(endInput, m.end);
+      console.log(
+        `[學習日誌自動填寫] 已帶入學習日誌列印查詢條件：校內編號=${printJob.schno}，${m.label}（${m.start} ~ ${m.end}）`
+      );
+      render();
+    }
 
-    console.log(
-      `[學習日誌自動填寫] 已自動帶入學習日誌列印查詢條件：校內編號=${printJob.schno}，日期=${printJob.start} ~ ${printJob.end}`
-    );
+    function render() {
+      const total = printJob.months.length;
+      const doneCount = printJob.months.filter((m) => m.printed).length;
+      const cur = printJob.months[printJob.index];
+      note.innerHTML = `
+        <div style="font-weight:bold;margin-bottom:6px;">🔧 學習日誌列印（每個月分開印，已按過列印 ${doneCount} / ${total} 個月）</div>
+        <div style="margin-bottom:6px;">
+          目前已帶入：<b>${cur.label}</b>（${cur.start} ~ ${cur.end}），校內編號 ${printJob.schno}。<br>
+          請自己按一下「列印」（會開新分頁跳出列印視窗，選「另存為 PDF」存檔，這步瀏覽器不給腳本代勞）；
+          按完後這裡會自動換成下一個月。
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;">
+          ${printJob.months
+            .map(
+              (m, i) =>
+                `<button type="button" class="af-print-month" data-i="${i}" style="${
+                  i === printJob.index ? 'font-weight:bold;outline:2px solid #e53838;' : ''
+                }">${m.printed ? '✅ ' : ''}${m.label}</button>`
+            )
+            .join('')}
+        </div>
+        <button type="button" id="af-print-finish">結束列印（清除這份列印清單）</button>
+      `;
+      note.querySelectorAll('.af-print-month').forEach((b) => {
+        b.addEventListener('click', () => fillMonth(Number(b.dataset.i)));
+      });
+      note.querySelector('#af-print-finish').addEventListener('click', finish);
+    }
+
+    function finish() {
+      clearPrintJob();
+      if (btn) btn.style.outline = '';
+      note.textContent = '🔧 學習日誌列印清單已結束。';
+    }
 
     // 稍微標記一下列印按鈕，提醒使用者這裡需要自己手動點一下
     // （不自動幫你按，避免瀏覽器把自動彈出的新分頁當成廣告快顯擋掉）
     if (btn) {
       btn.style.outline = '3px solid #e53838';
       btn.style.outlineOffset = '2px';
+
+      // 使用者按下「列印」：同步把這個月標記成已印、進度推到下一個月並存檔
+      // （同步存，萬一按完頁面被重新整理，下次載入也會直接停在下一個月）
+      btn.addEventListener('click', () => {
+        const job = readPrintJob();
+        if (!job) return; // 已經按過「結束列印」
+        printJob = job;
+        printJob.months[printJob.index].printed = true;
+        const next = printJob.months.findIndex((m) => !m.printed);
+        if (next === -1) {
+          clearPrintJob();
+          setTimeout(() => {
+            if (btn) btn.style.outline = '';
+            note.textContent = `🔧 ${printJob.months.length} 個月都已按過列印，列印清單已清除。若有哪個月沒存到，請自行選擇日期再印一次。`;
+          }, 1000);
+          return;
+        }
+        printJob.index = next;
+        savePrintJob(printJob);
+        // 稍等一下再換欄位，讓系統先用目前的欄位值把這個月的列印頁開出來
+        setTimeout(() => fillMonth(next), 1000);
+      });
     }
 
-    const note = document.createElement('div');
-    note.textContent =
-      `🔧 已自動帶入校內編號（${printJob.schno}）與日期範圍（${printJob.start} ~ ${printJob.end}），麻煩自己按一下「列印」（會開新分頁跳出列印視窗，接著選「另存為 PDF」自己存檔，這步瀏覽器不給腳本代勞）。`;
-    note.style.cssText =
-      'background:#fffbe6;border:2px solid #c1aa65;border-radius:8px;padding:10px;margin-bottom:10px;font-size:13px;font-family:sans-serif;';
-    if (document.body) {
-      document.body.insertBefore(note, document.body.firstChild);
-    }
+    fillMonth(printJob.index);
   }
 
   async function boot() {
